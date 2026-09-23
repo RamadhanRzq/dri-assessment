@@ -49,10 +49,16 @@ npm run seed            # reset and insert 500 listings
 npm run seed 50         # reset and insert 50 listings
 ```
 
-The seeder truncates `listings` and inserts the requested number of rows in
-batches. Values come from a fixed-seed PRNG, so the same command always produces
-the same rows; only `images` URLs are derived from the row index. It refuses to
-run when `NODE_ENV=production`.
+The seeder resets the category tree, the filter attribute definitions, and the
+listings, then inserts the requested number of rows in batches. It also defines
+the dynamic filter attributes (`engine_capacity`, `fuel_type`, `seat_count`,
+`is_negotiable`), attaches them to the right categories, and writes a value for
+every listing. `seat_count` is attached to Cars only, so the facets are exercised
+against an attribute that is absent for part of the data.
+
+Values come from a fixed-seed PRNG, so the same command always produces the same
+rows; only `images` URLs are derived from the row index. It refuses to run when
+`NODE_ENV=production`.
 
 ## Health
 
@@ -131,6 +137,8 @@ Supported query parameters:
 | `order` | `asc` \| `desc` |
 | `limit` | 1–100, default 20 |
 | `cursor` | Opaque; from `pagination.nextCursor` |
+| `q` | Full-text query over make, model, and location |
+| `attr.<key>` | Dynamic attribute filter; enum/boolean take a value, range takes `attr.<key>.min` / `.max` |
 
 ### Errors
 
@@ -141,6 +149,62 @@ Every failure uses one envelope, so clients never branch on two shapes:
 ```
 
 Validation failures add a `details` array naming each offending field.
+
+### Search & Filters
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/listings/search` | Full-text search plus every browse filter |
+| `GET` | `/listings/search/suggest` | Autocomplete for make, model, and city |
+| `GET` | `/filters` | Filter options with counts for the current context |
+| `GET` | `/filters/:categoryId` | Filter attributes a category exposes |
+
+Search accepts the same parameters as `GET /listings` and adds `q`:
+
+```bash
+curl 'http://localhost:3000/listings/search?q=toyota&maxPrice=300000000&attr.fuel_type=petrol&limit=20'
+```
+
+```json
+{
+  "data": [
+    {
+      "id": 12, "make": "Toyota", "model": "Avanza", "price": 210000000,
+      "attributes": { "engine_capacity": 1500, "fuel_type": "petrol", "is_negotiable": true },
+      "...": "..."
+    }
+  ],
+  "pagination": { "limit": 20, "hasMore": true, "total": 28, "nextCursor": "WzEsInJlbGV2YW5jZSIsMC42MDc5MjcxLDEyXQ" }
+}
+```
+
+With `q` present the default sort is `relevance` (`ts_rank`); pass `sort` to
+override it. Facets for the same context come from `GET /filters` with identical
+parameters:
+
+```bash
+curl 'http://localhost:3000/filters?q=toyota&maxPrice=300000000'
+```
+
+```json
+{
+  "total": 28,
+  "facets": [{ "key": "make", "values": [{ "value": "Toyota", "count": 28 }] }],
+  "attributes": [
+    { "key": "fuel_type", "type": "enum", "count": 28,
+      "values": [{ "value": "petrol", "count": 11 }, { "value": "diesel", "count": 17 }] }
+  ],
+  "price": { "key": "price", "min": 112000000, "max": 298000000, "count": 28 },
+  "year": { "key": "year", "min": 2015, "max": 2023, "count": 28 }
+}
+```
+
+Autocomplete:
+
+```bash
+curl 'http://localhost:3000/listings/search/suggest?q=toy'
+# {"data":[{"type":"make","value":"Toyota","count":28}]}
+```
 
 ### Categories
 
@@ -187,13 +251,16 @@ condition.
 
 ## Indexing Strategy
 
-`listings` carries three index families, each tied to a query shape:
+`listings` carries several index families, each tied to a query shape:
 
 | Family | Serves |
 | --- | --- |
 | `listings_active_*` (partial, `WHERE status <> 'removed'`) | Default browse, one per sort key |
 | `listings_status_*` (`status, <sort>, id`) | Explicit `status=` filters, including `removed` |
 | `listings_{make,model,location}_lower_idx` | Combined equality filters on those columns |
+| `listings_{make,model,location}_trgm_idx` (GIN) | Autocomplete prefix matches |
+| `listings_search_vector_idx` (GIN) | Full-text `@@` and `ts_rank` |
+| `listing_attribute_values_{text,num,bool}_idx` | Dynamic attribute filters, one per value column |
 
 The partial family exists because the default browse predicate is an inequality.
 `(status, created_at, id)` can only serve `status = ?`, so the planner fell back
@@ -207,6 +274,114 @@ partial index excludes, which the `listings_status_*` family covers.
 With 3–4 distinct values an equality filter still matches a fifth of the table,
 so the planner consistently preferred the sort index with a filter; `EXPLAIN`
 produced identical plans with and without them. Migration `0002` drops them.
+
+The dynamic-attribute indexes are partial (`WHERE value_num IS NOT NULL` and
+friends) because a row only ever populates one of the three value columns; a full
+index on all three would be two-thirds empty.
+
+`ts_rank` returns `real`, so the relevance keyset expression casts it to
+`float8`. Without the cast the cursor stores the float8 round-trip of a float4,
+which compares *lower* than the stored rank and makes the next page re-serve
+every row that shares the boundary score.
+
+`EXPLAIN (ANALYZE)` on the search path, measured on 50k rows: the FTS predicate
+uses `listings_search_vector_idx` as a bitmap index scan (0.98 ms for a term
+matching ~1% of rows) rather than a sequential scan; the suggest predicate uses
+the trigram index (4 ms versus 28 ms sequential). On the 500-row seed every plan
+is a sequential scan, which is correct at that size.
+
+## Dynamic Filter Attributes
+
+Filter attributes are **rows, not columns**, so adding a business filter is data,
+not a migration.
+
+| Table | Role |
+| --- | --- |
+| `attributes` | One row per definition: `key`, `label`, `type`, `unit`, `options` |
+| `category_attributes` | Which categories expose which attribute |
+| `listing_attribute_values` | One typed value per listing and attribute |
+
+The three types map to three value columns (`value_text`, `value_num`,
+`value_bool`) rather than one text column plus casts: the filter predicate stays
+index-supported (`value_num >= $1`), the `num_nonnulls(...) = 1` CHECK rejects a
+value stored in the wrong shape, and no read has to guess how to cast.
+
+Why not a `jsonb` column on `listings`: querying it per attribute needs an
+expression index per attribute, which reintroduces exactly the
+migration-per-filter the requirement rules out.
+
+Attributes are global and attached through a join table rather than owned by one
+category, because `engine_capacity` means the same thing on Cars and on
+Motorcycles; one shared definition keeps its unit, label, and options from
+drifting per branch. `GET /filters/:categoryId` returns the category's own
+attributes plus every ancestor's (`c.path @> target`), so a leaf inherits what is
+defined above it and a sibling branch never leaks in.
+
+Query parameters are assembled from the `attr.` prefix by `AttributeQueryPipe`,
+registered globally *before* `ValidationPipe`. This has to be a pipe rather than
+a `@Transform` on the DTO: class-transformer only visits keys the source object
+already has, so a transform on `attributes` never runs when the client sent
+`attr.*`. Without it, `whitelist` would strip the prefixed keys as unknown
+properties and the filters would be silently dropped.
+
+Filtering reaches the values table through `EXISTS`, so a listing matching
+several attributes stays one row and the planner can use the
+`(attribute_id, value_*)` indexes.
+
+## Search Strategy
+
+`search_vector` is a **stored generated column** over `make`, `model`,
+`location`, and `color`, weighted `A`/`A`/`B`/`C`. Stored, so it can never drift
+from the row; generated, so no application path has to remember to update it.
+
+The `simple` configuration is used, not `english`: vehicle makes, models, and
+Indonesian city names are proper nouns, and stemming them (`avanza` -> `avanz`)
+would only lose precision. Queries go through `websearch_to_tsquery`, which
+parses the user's text safely (`or`, quoted phrases, `-term`) instead of
+requiring a hand-rolled parser over `to_tsquery` syntax.
+
+Autocomplete uses `pg_trgm` GIN indexes on the **bare** columns and matches
+`col ILIKE 'prefix%'`. Deliberately not `lower(col) LIKE`: the indexes are
+declared on `make`, `model`, and `location`, and wrapping the column in `lower()`
+puts the expression out of their reach. Measured on 50k rows: 28 ms as a
+sequential scan versus 4 ms as a bitmap index scan. `%` and `_` in the user's
+input are escaped, so a literal underscore cannot widen the match.
+
+Why PostgreSQL full-text search is sufficient here, instead of Elasticsearch:
+the corpus is one table of structured listings, the ranking needed is
+field-weight plus term frequency (not semantic or cross-field relevance), and
+`ts_rank` over a GIN index answers it in single-digit milliseconds. Elasticsearch
+would add a second datastore, a sync pipeline, and its own consistency problem —
+real cost, for ranking this assessment does not need. The generated column means
+an external index could be added later without changing the write path.
+
+## Faceted Search Strategy
+
+`GET /filters` accepts the same parameters as `GET /listings/search` and returns
+counts for that exact context, so a facet count always equals the number of rows
+the corresponding filter would return (there is a test asserting precisely
+that).
+
+Counts for the six column facets are produced in **one scan** via `GROUPING
+SETS`:
+
+```sql
+GROUP BY GROUPING SETS
+  ((make), (model), (fuel_type), (transmission), (condition), (location), ())
+```
+
+The empty grouping set rides along to carry the global `min`/`max` price and
+year that the range facets need, so those are free rather than a second pass. One
+query per facet would scan the same rows six more times.
+
+Dynamic attributes are aggregated in two more queries — enum/boolean values get
+per-value counts, `range` attributes report their observed span. A numeric
+attribute has as many distinct values as listings, so per-value counts would
+return a histogram nobody can render; `min`/`max` is what a slider needs.
+
+Enum facets list **every declared option**, including ones currently matching
+nothing, with `count: 0`. A filter panel has to render an unselected value rather
+than have it vanish and reappear as filters change.
 
 ## Pagination Strategy
 
