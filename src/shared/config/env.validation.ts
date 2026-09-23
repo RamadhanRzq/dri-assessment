@@ -1,5 +1,13 @@
-import { plainToInstance } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, IsString, Min, validateSync } from 'class-validator';
+import { plainToInstance, Transform } from 'class-transformer';
+import {
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Min,
+  validateSync,
+} from 'class-validator';
 
 export enum NodeEnv {
   Development = 'development',
@@ -10,16 +18,16 @@ export enum NodeEnv {
 class EnvironmentVariables {
   @IsEnum(NodeEnv)
   @IsOptional()
-  NODE_ENV?: NodeEnv;
+  NODE_ENV: NodeEnv = NodeEnv.Development;
 
   @IsInt()
   @Min(1)
   @IsOptional()
-  PORT?: number;
+  PORT: number = 3000;
 
   @IsString()
-  @IsOptional()
-  DATABASE_URL?: string;
+  @IsNotEmpty()
+  DATABASE_URL: string;
 
   @IsString()
   @IsOptional()
@@ -31,7 +39,11 @@ export function validateEnv(config: Record<string, unknown>): EnvironmentVariabl
     enableImplicitConversion: true,
   });
 
-  const errors = validateSync(env, { skipMissingProperties: false });
+  const errors = validateSync(env, {
+    skipMissingProperties: false,
+    stopAtFirstError: false,
+  });
+
   if (errors.length > 0) {
     const details = errors
       .map((e) => `  ${e.property}: ${Object.values(e.constraints ?? {}).join(', ')}`)
