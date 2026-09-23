@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
@@ -100,4 +101,15 @@ export class CreateListingDto {
   @IsIn(LISTING_STATUSES)
   @IsOptional()
   status?: ListingStatus;
+
+  @ApiPropertyOptional({
+    type: Number,
+    nullable: true,
+    example: 3,
+    description: 'Category id. Omit to leave the listing uncategorised.',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @IsOptional()
+  categoryId?: number | null;
 }

@@ -124,6 +124,16 @@ export class BrowseListingsDto {
   status?: ListingStatus;
 
   @ApiPropertyOptional({
+    type: Number,
+    example: 3,
+    description: 'Category id; matches the category and all of its descendants.',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @IsOptional()
+  categoryId?: number;
+
+  @ApiPropertyOptional({
     enum: LISTING_SORT_KEYS,
     default: 'createdAt',
     description: 'Column to order by. Always tie-broken by `id`.',

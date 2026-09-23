@@ -54,6 +54,9 @@ export class ListingDto {
   @ApiProperty({ enum: LISTING_STATUSES, example: 'available' })
   status: string;
 
+  @ApiPropertyOptional({ type: Number, nullable: true, example: 3 })
+  categoryId: number | null;
+
   @ApiProperty({ example: '2026-01-01T00:00:00.000Z', format: 'date-time' })
   createdAt: string;
 

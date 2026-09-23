@@ -7,6 +7,8 @@ import type { UpdateListingDto } from './dto/update-listing.dto.js';
 import type { BrowseListingsDto } from './dto/browse-listings.dto.js';
 import type { ListingDto, ListingPageDto } from './dto/listing-response.dto.js';
 
+export type ListingPage = ListingPageDto;
+
 @Injectable()
 export class ListingsService {
   constructor(private readonly repository: ListingsRepository) {}
@@ -34,7 +36,7 @@ export class ListingsService {
     return toResponse(row);
   }
 
-  async browse(filters: BrowseListingsDto): Promise<ListingPageDto> {
+  async browse(filters: BrowseListingsDto, categoryId?: number): Promise<ListingPageDto> {
     if (
       filters.minPrice !== undefined &&
       filters.maxPrice !== undefined &&
@@ -60,11 +62,11 @@ export class ListingsService {
     const cursor = filters.cursor ? decodeCursor(filters.cursor, filters.sort) : null;
 
     // The extra row only signals that another page exists; it is not returned.
-    const rows = await this.repository.browse(filters, cursor);
+    const rows = await this.repository.browse(filters, cursor, categoryId);
     const hasMore = rows.length > filters.limit;
     const page = hasMore ? rows.slice(0, filters.limit) : rows;
 
-    const total = await this.repository.count(filters);
+    const total = await this.repository.count(filters, categoryId);
     const last = page.at(-1);
 
     return {
@@ -115,6 +117,7 @@ function toResponse(row: ListingRow): ListingDto {
     images: row.images,
     location: row.location,
     status: row.status,
+    categoryId: row.category_id,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };

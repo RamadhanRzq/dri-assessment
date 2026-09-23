@@ -32,6 +32,7 @@ const COLUMN_BY_FIELD: Record<string, string> = {
   images: 'images',
   location: 'location',
   status: 'status',
+  categoryId: 'category_id',
 };
 
 /** Bind placeholder values without ever interpolating them into SQL text. */
@@ -52,8 +53,8 @@ export class ListingsRepository {
     const rows = await this.db.query<ListingRow>(
       `INSERT INTO listings
          (make, model, year, mileage, price, condition, transmission,
-          fuel_type, color, images, location, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, 'available'))
+          fuel_type, color, images, location, status, category_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, 'available'), $13)
        RETURNING ${LISTING_COLUMNS}`,
       [
         dto.make,
@@ -68,6 +69,7 @@ export class ListingsRepository {
         dto.images ?? [],
         dto.location,
         dto.status ?? null,
+        dto.categoryId ?? null,
       ],
     );
     return rows[0];
@@ -125,9 +127,13 @@ export class ListingsRepository {
    * `limit + 1` rows are requested so the caller can tell whether another page
    * exists without running a separate COUNT.
    */
-  async browse(filters: BrowseListingsDto, cursor: CursorPayload | null): Promise<BrowseRow[]> {
+  async browse(
+    filters: BrowseListingsDto,
+    cursor: CursorPayload | null,
+    categoryId?: number,
+  ): Promise<BrowseRow[]> {
     const params = new ParameterList();
-    const conditions = this.filterConditions(filters, params);
+    const conditions = this.filterConditions(filters, params, categoryId);
     const sortColumn = SORT_COLUMN[filters.sort];
     const direction = filters.order === 'asc' ? 'ASC' : 'DESC';
 
@@ -153,9 +159,9 @@ export class ListingsRepository {
   }
 
   /** Total rows matching the filters, ignoring the cursor and page size. */
-  async count(filters: BrowseListingsDto): Promise<number> {
+  async count(filters: BrowseListingsDto, categoryId?: number): Promise<number> {
     const params = new ParameterList();
-    const conditions = this.filterConditions(filters, params);
+    const conditions = this.filterConditions(filters, params, categoryId);
 
     const rows = await this.db.query<{ count: number }>(
       `SELECT count(*)::bigint AS count
@@ -172,7 +178,11 @@ export class ListingsRepository {
    * Soft-deleted rows are hidden unless the caller explicitly asks for them,
    * which is why the default status filter is an inequality rather than `=`.
    */
-  private filterConditions(filters: BrowseListingsDto, params: ParameterList): string[] {
+  private filterConditions(
+    filters: BrowseListingsDto,
+    params: ParameterList,
+    categoryId?: number,
+  ): string[] {
     const conditions = [
       filters.status === undefined
         ? `status <> ${params.bind('removed')}`
@@ -191,6 +201,18 @@ export class ListingsRepository {
     if (filters.condition) conditions.push(`condition = ${params.bind(filters.condition)}`);
     if (filters.transmission) conditions.push(`transmission = ${params.bind(filters.transmission)}`);
     if (filters.fuelType) conditions.push(`fuel_type = ${params.bind(filters.fuelType)}`);
+
+    // Scoped to a category and everything beneath it. The subtree is resolved
+    // from the ltree path, but wrapped in ARRAY() rather than written as
+    // `IN (subquery)`: the semi-join form made the planner scan the whole active
+    // index and filter afterwards (35 ms on 50k rows), while the array form
+    // turns the category into an index condition (0.17 ms).
+    const scope = filters.categoryId ?? categoryId;
+    if (scope !== undefined) {
+      conditions.push(
+        `category_id = ANY(ARRAY(SELECT id FROM categories WHERE path <@ (SELECT path FROM categories WHERE id = ${params.bind(scope)})))`,
+      );
+    }
 
     return conditions;
   }

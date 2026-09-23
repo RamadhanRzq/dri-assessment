@@ -30,6 +30,10 @@ const MODELS_BY_MAKE: Record<string, string[]> = {
   Isuzu: ['Panther', 'D-Max', 'MU-X'],
   BMW: ['320i', '520i', 'X1', 'X3', 'M4'],
   'Mercedes-Benz': ['C200', 'E250', 'GLA', 'GLC', 'S450'],
+  'Honda Motor': ['CBR150R', 'Vario', 'Beat', 'PCX'],
+  Yamaha: ['R15', 'NMAX', 'Mio', 'Aerox'],
+  Kawasaki: ['Ninja 250', 'W175'],
+  'Suzuki Motor': ['Satria F150', 'Address'],
 };
 
 const CITIES = [
@@ -55,6 +59,50 @@ const STATUSES = ['available', 'pending', 'sold', 'removed'];
 
 const MAKES = Object.keys(MODELS_BY_MAKE);
 
+/** Motorcycles price and wear far below cars, so the ranges differ. */
+const MOTORCYCLE_MAKES = new Set(['Honda Motor', 'Yamaha', 'Kawasaki', 'Suzuki Motor']);
+
+/** Two roots with children, enough to exercise category-scoped browsing. */
+const CATEGORY_TREE: Array<{ name: string; slug: string; children: Array<{ name: string; slug: string }> }> = [
+  {
+    name: 'Cars',
+    slug: 'cars',
+    children: [
+      { name: 'SUV', slug: 'suv' },
+      { name: 'Sedan', slug: 'sedan' },
+      { name: 'Hatchback', slug: 'hatchback' },
+    ],
+  },
+  {
+    name: 'Motorcycles',
+    slug: 'motorcycles',
+    children: [
+      { name: 'Sport', slug: 'sport' },
+      { name: 'Scooter', slug: 'scooter' },
+    ],
+  },
+];
+
+/** Model to leaf slug, so a listing's category matches what it actually is. */
+const CATEGORY_BY_MODEL: Record<string, string> = {
+  'Pajero Sport': 'suv', 'CR-V': 'suv', 'X-Trail': 'suv', 'CX-5': 'suv', 'CX-3': 'suv',
+  'Outlander': 'suv', 'Terios': 'suv', 'Rush': 'suv', 'Fortuner': 'suv', 'XL7': 'suv',
+  'Almaz': 'suv', 'Creta': 'suv', 'Santa Fe': 'suv', 'MU-X': 'suv', 'X3': 'suv',
+  'GLA': 'suv', 'GLC': 'suv', 'Kicks': 'suv', 'HR-V': 'suv',
+  'Civic': 'sedan', 'Mazda3': 'sedan', '320i': 'sedan', '520i': 'sedan', 'C200': 'sedan',
+  'E250': 'sedan', 'S450': 'sedan', 'Camry': 'sedan',
+  'Ayla': 'hatchback', 'Brio': 'hatchback', 'Ignis': 'hatchback', 'Baleno': 'hatchback',
+  'Yaris': 'hatchback', 'Mazda': 'hatchback', 'MX-5': 'hatchback', 'Ioniq 5': 'hatchback',
+  'Air EV': 'hatchback', 'M4': 'sedan',
+  'Avanza': 'suv', 'Xenia': 'suv', 'Mobilio': 'suv', 'Ertiga': 'suv', 'Sigra': 'suv',
+  'Calya': 'suv', 'Innova': 'suv', 'Stargazer': 'suv', 'Confero': 'suv', 'Cortez': 'suv',
+  'Livina': 'suv', 'Serena': 'suv', 'X1': 'suv', 'Gran Max': 'suv', 'L300': 'suv',
+  'Carry': 'suv', 'Panther': 'suv', 'D-Max': 'suv',
+  'CBR150R': 'sport', 'R15': 'sport', 'Ninja 250': 'sport', 'Satria F150': 'sport',
+  'Vario': 'scooter', 'Beat': 'scooter', 'PCX': 'scooter', 'NMAX': 'scooter',
+  'Mio': 'scooter', 'Aerox': 'scooter', 'W175': 'sport', 'Address': 'scooter',
+};
+
 /** mulberry32: small, fast, and identical across runs and platforms. */
 function mulberry32(seed: number): () => number {
   let state = seed;
@@ -70,6 +118,10 @@ const rng = mulberry32(SEED);
 
 function pick<T>(items: readonly T[]): T {
   return items[Math.floor(rng() * items.length)];
+}
+
+function isMotorcycle(make: string): boolean {
+  return MOTORCYCLE_MAKES.has(make);
 }
 
 /** Inclusive on both ends. */
@@ -90,23 +142,29 @@ const COLUMNS = [
   'images',
   'location',
   'status',
+  'category_id',
   'created_at',
   'updated_at',
 ] as const;
 
-type SeedRow = Record<(typeof COLUMNS)[number], string | number | string[]>;
+type SeedRow = Record<(typeof COLUMNS)[number], string | number | string[] | null>;
+
+/** Set once the category tree exists; maps a model to its leaf category id. */
+let categoryIdFor: (model: string) => number | null = () => null;
 
 function buildRow(index: number): SeedRow {
   const make = pick(MAKES);
+  const model = pick(MODELS_BY_MAKE[make]);
   const createdAt = new Date(Date.UTC(2026, 0, 1) - int(0, SPREAD_DAYS) * 86_400_000);
 
   return {
     make,
-    model: pick(MODELS_BY_MAKE[make]),
+    model,
     year: int(2010, 2024),
-    mileage: int(0, 200_000),
-    // Whole millions of IDR, from 20m to 1.5b.
-    price: int(20, 1_500) * 1_000_000,
+    mileage: isMotorcycle(make) ? int(0, 60_000) : int(0, 200_000),
+    // Whole millions of IDR. Motorcycles sit far below cars in price and
+    // odometer, so a single range would misrepresent one of them.
+    price: (isMotorcycle(make) ? int(8, 120) : int(20, 1_500)) * 1_000_000,
     condition: pick(CONDITIONS),
     transmission: pick(TRANSMISSIONS),
     fuel_type: pick(FUEL_TYPES),
@@ -117,6 +175,7 @@ function buildRow(index: number): SeedRow {
     ),
     location: pick(CITIES),
     status: pick(STATUSES),
+    category_id: categoryIdFor(model),
     created_at: createdAt.toISOString(),
     updated_at: createdAt.toISOString(),
   };
@@ -161,7 +220,30 @@ try {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // listings references categories, so clear the link before the tree.
+    await client.query('UPDATE listings SET category_id = NULL');
     await client.query('TRUNCATE TABLE listings RESTART IDENTITY');
+    await client.query('DELETE FROM categories');
+
+    // Category ids are assigned by the database, so capture the leaf ids by slug
+    // instead of assuming values.
+    const leafIdBySlug = new Map<string, number>();
+    for (const root of CATEGORY_TREE) {
+      const { rows: rootRows } = await client.query<{ id: number }>(
+        `INSERT INTO categories (parent_id, name, slug, path, depth)
+         VALUES (NULL, $1, $2, $3::ltree, 1) RETURNING id`,
+        [root.name, root.slug, root.slug],
+      );
+      for (const child of root.children) {
+        const { rows } = await client.query<{ id: number }>(
+          `INSERT INTO categories (parent_id, name, slug, path, depth)
+           VALUES ($1, $2, $3, $4::ltree, 2) RETURNING id`,
+          [rootRows[0].id, child.name, child.slug, `${root.slug}.${child.slug}`],
+        );
+        leafIdBySlug.set(child.slug, rows[0].id);
+      }
+    }
+    categoryIdFor = (model: string) => leafIdBySlug.get(CATEGORY_BY_MODEL[model] ?? '') ?? null;
 
     for (let offset = 0; offset < count; offset += BATCH_SIZE) {
       const size = Math.min(BATCH_SIZE, count - offset);

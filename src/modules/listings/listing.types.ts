@@ -23,12 +23,13 @@ export type ListingRow = {
   images: string[];
   location: string;
   status: ListingStatus;
+  category_id: number | null;
   created_at: Date;
   updated_at: Date;
 };
 
 export const LISTING_COLUMNS = `id, make, model, year, mileage, price, condition,
-  transmission, fuel_type, color, images, location, status, created_at, updated_at`;
+  transmission, fuel_type, color, images, location, status, category_id, created_at, updated_at`;
 
 /**
  * Browse rows carry an extra exact-precision timestamp.
