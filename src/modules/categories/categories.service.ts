@@ -66,12 +66,6 @@ export class CategoriesService {
     return this.listings.browse(query, id);
   }
 
-  /** Category ids including descendants; used to scope listing queries. */
-  async subtreeIds(id: number): Promise<number[]> {
-    await this.requireCategory(id);
-    return this.repository.findSubtreeIds(id);
-  }
-
   private async requireCategory(id: number): Promise<CategoryRow> {
     const row = await this.repository.findById(id);
     if (!row) throw new NotFoundException(`Category ${id} not found`);

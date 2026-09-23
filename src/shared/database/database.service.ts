@@ -11,6 +11,12 @@ import { Pool, types, type PoolClient, type QueryResultRow } from 'pg';
 // Every int8 column here is an id or an IDR price, far below 2^53.
 types.setTypeParser(types.builtins.INT8, (value) => Number(value));
 
+// numeric (OID 1700) backs the dynamic attribute value column. Its values are
+// engine capacities, seat counts, and similar small numbers, so the same
+// reasoning applies: parse to a number rather than shipping a string in an
+// otherwise numeric JSON field.
+types.setTypeParser(types.builtins.NUMERIC, (value) => Number(value));
+
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DatabaseService.name);

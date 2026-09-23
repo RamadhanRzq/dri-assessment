@@ -6,6 +6,7 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
+  IsObject,
   IsOptional,
   IsString,
   Matches,
@@ -121,4 +122,15 @@ export class UpdateListingDto {
   @IsInt()
   @IsOptional()
   categoryId?: number | null;
+
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: true,
+    example: { seats: '7', accident_free: null },
+    description:
+      'Attribute values to set, keyed by attribute `key`. Only the supplied keys change; a `null` value removes the attribute.',
+  })
+  @IsObject()
+  @IsOptional()
+  attributes?: Record<string, unknown>;
 }

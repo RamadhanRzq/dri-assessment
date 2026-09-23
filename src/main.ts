@@ -3,13 +3,18 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module.js';
+import { AttributeQueryPipe } from './modules/listings/attribute-query.pipe.js';
 import { ApiExceptionFilter } from './shared/errors/api-exception.filter.js';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const config = app.get(ConfigService);
 
+  // Registered before ValidationPipe: it turns `attr.*` parameters into the
+  // `attributes` object the DTO declares, and `whitelist` would otherwise strip
+  // them as unknown properties before validation ever saw them.
   app.useGlobalPipes(
+    new AttributeQueryPipe(),
     new ValidationPipe({
       // Strip unknown properties instead of rejecting them, and coerce query
       // strings into the declared DTO types.

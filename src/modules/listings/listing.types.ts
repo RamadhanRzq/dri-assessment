@@ -38,4 +38,17 @@ export const LISTING_COLUMNS = `id, make, model, year, mileage, price, condition
  * microseconds Postgres stores and re-serve the boundary row on the next page.
  * The `::text` form round-trips through `timestamptz` exactly.
  */
-export type BrowseRow = ListingRow & { created_at_cursor: string };
+export type BrowseRow = ListingRow & {
+  created_at_cursor: string;
+  /** `ts_rank` of the search query; null when the request had no `q`. */
+  relevance: number | null;
+};
+
+/** One stored dynamic attribute value, keyed by the attribute's `key`. */
+export type ListingAttributeValue = string | number | boolean;
+
+export type SuggestRow = {
+  type: 'make' | 'model' | 'location';
+  value: string;
+  count: number;
+};

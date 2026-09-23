@@ -57,6 +57,15 @@ export class ListingDto {
   @ApiPropertyOptional({ type: Number, nullable: true, example: 3 })
   categoryId: number | null;
 
+  @ApiProperty({
+    type: 'object',
+    additionalProperties: true,
+    example: { seats: '7', engine_capacity: 1500 },
+    description:
+      'Dynamic attribute values, keyed by attribute `key`. Empty when the listing carries none.',
+  })
+  attributes: Record<string, unknown>;
+
   @ApiProperty({ example: '2026-01-01T00:00:00.000Z', format: 'date-time' })
   createdAt: string;
 
@@ -85,6 +94,22 @@ export class PaginationDto {
       'Opaque keyset cursor for the next page. Null when this is the last page. Pass it back as `cursor`; it is bound to the sort key it was issued for.',
   })
   nextCursor: string | null;
+}
+
+export class SuggestDto {
+  @ApiProperty({ enum: ['make', 'model', 'location'], example: 'make' })
+  type: string;
+
+  @ApiProperty({ example: 'Toyota' })
+  value: string;
+
+  @ApiProperty({ example: 42, description: 'Listings with this value in the current scope.' })
+  count: number;
+}
+
+export class SuggestResponseDto {
+  @ApiProperty({ type: [SuggestDto] })
+  data: SuggestDto[];
 }
 
 export class ListingPageDto {

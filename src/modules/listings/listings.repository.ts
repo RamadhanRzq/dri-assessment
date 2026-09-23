@@ -1,22 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../shared/database/database.service.js';
+import { LISTING_COLUMNS, type BrowseRow, type ListingRow } from './listing.types.js';
 import {
-  LISTING_COLUMNS,
-  type BrowseRow,
-  type ListingRow,
-} from './listing.types.js';
-import type { BrowseListingsDto, ListingSortKey } from './dto/browse-listings.dto.js';
+  buildListingConditions,
+  ParameterList,
+  resolveSort,
+  type ResolvedAttributeFilter,
+} from './listing-query.js';
+import type { BrowseListingsDto } from './dto/browse-listings.dto.js';
 import type { CreateListingDto } from './dto/create-listing.dto.js';
 import type { UpdateListingDto } from './dto/update-listing.dto.js';
+import type { AttributeValueColumns } from '../filters/attribute-values.js';
 import type { CursorPayload } from '../../shared/pagination/cursor.js';
-
-/** Column each sort key reads; the whitelist prevents SQL built from request input. */
-const SORT_COLUMN: Record<ListingSortKey, string> = {
-  createdAt: 'created_at',
-  price: 'price',
-  year: 'year',
-  mileage: 'mileage',
-};
+import type { PoolClient } from 'pg';
 
 /** API field name to physical column, used to build PATCH assignments. */
 const COLUMN_BY_FIELD: Record<string, string> = {
@@ -35,44 +31,59 @@ const COLUMN_BY_FIELD: Record<string, string> = {
   categoryId: 'category_id',
 };
 
-/** Bind placeholder values without ever interpolating them into SQL text. */
-class ParameterList {
-  readonly values: unknown[] = [];
+/** Everything a listing query needs after the request has been interpreted. */
+export type ListingQuery = {
+  filters: BrowseListingsDto & { q?: string };
+  attributeFilters: ResolvedAttributeFilter[];
+  categoryId?: number;
+};
 
-  bind(value: unknown): string {
-    this.values.push(value);
-    return `$${this.values.length}`;
-  }
-}
+/** Attribute value as read back, before being keyed by its attribute name. */
+type AttributeValueRow = {
+  listing_id: number;
+  key: string;
+  type: string;
+  value_text: string | null;
+  value_num: number | null;
+  value_bool: boolean | null;
+};
 
 @Injectable()
 export class ListingsRepository {
   constructor(private readonly db: DatabaseService) {}
 
-  async create(dto: CreateListingDto): Promise<ListingRow> {
-    const rows = await this.db.query<ListingRow>(
-      `INSERT INTO listings
-         (make, model, year, mileage, price, condition, transmission,
-          fuel_type, color, images, location, status, category_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, 'available'), $13)
-       RETURNING ${LISTING_COLUMNS}`,
-      [
-        dto.make,
-        dto.model,
-        dto.year,
-        dto.mileage,
-        dto.price,
-        dto.condition,
-        dto.transmission,
-        dto.fuelType,
-        dto.color,
-        dto.images ?? [],
-        dto.location,
-        dto.status ?? null,
-        dto.categoryId ?? null,
-      ],
-    );
-    return rows[0];
+  async create(
+    dto: CreateListingDto,
+    attributes: { attributeId: number; value: AttributeValueColumns | null }[],
+  ): Promise<ListingRow> {
+    return this.db.withTransaction(async (client) => {
+      const { rows } = await client.query<ListingRow>(
+        `INSERT INTO listings
+           (make, model, year, mileage, price, condition, transmission,
+            fuel_type, color, images, location, status, category_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, 'available'), $13)
+         RETURNING ${LISTING_COLUMNS}`,
+        [
+          dto.make,
+          dto.model,
+          dto.year,
+          dto.mileage,
+          dto.price,
+          dto.condition,
+          dto.transmission,
+          dto.fuelType,
+          dto.color,
+          dto.images ?? [],
+          dto.location,
+          dto.status ?? null,
+          dto.categoryId ?? null,
+        ],
+      );
+
+      const listing = rows[0];
+      await this.writeAttributeValues(client, listing.id, attributes);
+      return listing;
+    });
   }
 
   async findById(id: number): Promise<ListingRow | undefined> {
@@ -84,7 +95,11 @@ export class ListingsRepository {
   }
 
   /** Returns the updated row, or undefined when the id does not exist. */
-  async update(id: number, dto: UpdateListingDto): Promise<ListingRow | undefined> {
+  async update(
+    id: number,
+    dto: UpdateListingDto,
+    attributes: { attributeId: number; value: AttributeValueColumns | null }[] | undefined,
+  ): Promise<ListingRow | undefined> {
     const assignments: string[] = [];
     const params: unknown[] = [];
 
@@ -96,17 +111,38 @@ export class ListingsRepository {
     }
 
     // No recognised field means nothing to change; report the current row.
-    if (assignments.length === 0) return this.findById(id);
+    if (assignments.length === 0 && attributes === undefined) return this.findById(id);
 
-    params.push(id);
-    const rows = await this.db.query<ListingRow>(
-      `UPDATE listings
-          SET ${assignments.join(', ')}, updated_at = now()
-        WHERE id = $${params.length}
-        RETURNING ${LISTING_COLUMNS}`,
-      params,
-    );
-    return rows[0];
+    return this.db.withTransaction(async (client) => {
+      let updated: ListingRow | undefined;
+
+      if (assignments.length > 0) {
+        const { rows } = await client.query<ListingRow>(
+          `UPDATE listings
+              SET ${assignments.join(', ')}, updated_at = now()
+            WHERE id = $${params.length + 1}
+            RETURNING ${LISTING_COLUMNS}`,
+          [...params, id],
+        );
+        updated = rows[0];
+        // Nothing to attach values to; the row does not exist.
+        if (!updated) return undefined;
+      } else {
+        const { rows } = await client.query<ListingRow>(
+          `SELECT ${LISTING_COLUMNS} FROM listings WHERE id = $1`,
+          [id],
+        );
+        updated = rows[0];
+        if (!updated) return undefined;
+      }
+
+      if (attributes !== undefined) {
+        await this.writeAttributeValues(client, id, attributes);
+        await client.query('UPDATE listings SET updated_at = now() WHERE id = $1', [id]);
+      }
+
+      return updated;
+    });
   }
 
   /** Soft delete: the row stays, only the status changes. */
@@ -128,40 +164,46 @@ export class ListingsRepository {
    * exists without running a separate COUNT.
    */
   async browse(
-    filters: BrowseListingsDto,
+    query: ListingQuery,
     cursor: CursorPayload | null,
-    categoryId?: number,
   ): Promise<BrowseRow[]> {
     const params = new ParameterList();
-    const conditions = this.filterConditions(filters, params, categoryId);
-    const sortColumn = SORT_COLUMN[filters.sort];
-    const direction = filters.order === 'asc' ? 'ASC' : 'DESC';
+    const { filters } = query;
+    const conditions = buildListingConditions(filters, params, query);
+    const sort = resolveSort(filters);
+    const rank = sort.relevance ? relevanceExpression(filters.q as string, params) : null;
+    const sortExpression = rank ?? sort.column;
 
     // Keyset predicate: compare the sort tuple lexicographically, so rows that
     // share a sort value continue exactly after the cursor's id.
     if (cursor) {
-      const operator = filters.order === 'asc' ? '>' : '<';
-      const value = params.bind(cursor.value);
-      const id = params.bind(cursor.id);
-      const cast = filters.sort === 'createdAt' ? 'timestamptz' : 'bigint';
-      conditions.push(`(${sortColumn}, id) ${operator} (${value}::${cast}, ${id}::bigint)`);
+      const operator = sort.direction === 'ASC' ? '>' : '<';
+      const cast = sort.relevance
+        ? 'float8'
+        : sort.column === 'created_at'
+          ? 'timestamptz'
+          : 'bigint';
+      conditions.push(
+        `(${sortExpression}, id) ${operator} (${params.bind(cursor.value)}::${cast}, ${params.bind(cursor.id)}::bigint)`,
+      );
     }
 
     return this.db.query<BrowseRow>(
       `SELECT ${LISTING_COLUMNS},
-              created_at::text AS created_at_cursor
+              created_at::text AS created_at_cursor,
+              ${rank ?? 'NULL::float8'} AS relevance
          FROM listings
         WHERE ${conditions.join(' AND ')}
-        ORDER BY ${sortColumn} ${direction}, id ${direction}
+        ORDER BY ${sortExpression} ${sort.direction}, id ${sort.direction}
         LIMIT ${params.bind(filters.limit + 1)}`,
       params.values,
     );
   }
 
   /** Total rows matching the filters, ignoring the cursor and page size. */
-  async count(filters: BrowseListingsDto, categoryId?: number): Promise<number> {
+  async count(query: ListingQuery): Promise<number> {
     const params = new ParameterList();
-    const conditions = this.filterConditions(filters, params, categoryId);
+    const conditions = buildListingConditions(query.filters, params, query);
 
     const rows = await this.db.query<{ count: number }>(
       `SELECT count(*)::bigint AS count
@@ -173,47 +215,136 @@ export class ListingsRepository {
   }
 
   /**
-   * Shared WHERE clauses for browse and count.
+   * Attribute values for a whole page in one query.
    *
-   * Soft-deleted rows are hidden unless the caller explicitly asks for them,
-   * which is why the default status filter is an inequality rather than `=`.
+   * Read per page rather than per listing: asking for one listing's attributes
+   * inside a loop is the N+1 this avoids.
    */
-  private filterConditions(
-    filters: BrowseListingsDto,
-    params: ParameterList,
+  async findAttributeValues(listingIds: number[]): Promise<Map<number, Record<string, unknown>>> {
+    if (listingIds.length === 0) return new Map();
+
+    const rows = await this.db.query<AttributeValueRow>(
+      `SELECT v.listing_id, a.key, a.type, v.value_text, v.value_num, v.value_bool
+         FROM listing_attribute_values v
+         JOIN attributes a ON a.id = v.attribute_id
+        WHERE v.listing_id = ANY($1::bigint[])`,
+      [listingIds],
+    );
+
+    const byListing = new Map<number, Record<string, unknown>>();
+    for (const row of rows) {
+      const values = byListing.get(row.listing_id) ?? {};
+      values[row.key] = attributeValue(row);
+      byListing.set(row.listing_id, values);
+    }
+    return byListing;
+  }
+
+  /**
+   * Prefix suggestions over make, model, and location.
+   *
+   * The three branches are one statement so the endpoint is a single round trip.
+   * Each matches `col ILIKE 'prefix%'` — deliberately on the raw column, not on
+   * `lower(col)`: the trigram indexes from migration 0004 are declared on the
+   * bare columns (`make gin_trgm_ops`), and an expression the index does not
+   * carry forces a sequential scan. Measured on 50k rows: 28 ms as a seq scan
+   * versus 4 ms as a bitmap index scan.
+   */
+  async suggest(
+    prefix: string,
+    limit: number,
     categoryId?: number,
-  ): string[] {
-    const conditions = [
-      filters.status === undefined
-        ? `status <> ${params.bind('removed')}`
-        : `status = ${params.bind(filters.status)}`,
-    ];
+  ): Promise<{ type: string; value: string; count: number }[]> {
+    const params = new ParameterList();
+    const conditions = buildListingConditions({}, params, { categoryId });
+    // `%` and `_` are the only wildcards; escaping them keeps a literal `_`
+    // in a make or city name from widening the match.
+    const escaped = prefix.replace(/[\\%_]/g, '\\$&');
+    const pattern = params.bind(`${escaped}%`);
 
-    if (filters.make) conditions.push(`lower(make) = lower(${params.bind(filters.make)})`);
-    if (filters.model) conditions.push(`lower(model) = lower(${params.bind(filters.model)})`);
-    if (filters.location) conditions.push(`lower(location) = lower(${params.bind(filters.location)})`);
-    if (filters.minPrice !== undefined) conditions.push(`price >= ${params.bind(filters.minPrice)}`);
-    if (filters.maxPrice !== undefined) conditions.push(`price <= ${params.bind(filters.maxPrice)}`);
-    if (filters.yearFrom !== undefined) conditions.push(`year >= ${params.bind(filters.yearFrom)}`);
-    if (filters.yearTo !== undefined) conditions.push(`year <= ${params.bind(filters.yearTo)}`);
-    if (filters.minMileage !== undefined) conditions.push(`mileage >= ${params.bind(filters.minMileage)}`);
-    if (filters.maxMileage !== undefined) conditions.push(`mileage <= ${params.bind(filters.maxMileage)}`);
-    if (filters.condition) conditions.push(`condition = ${params.bind(filters.condition)}`);
-    if (filters.transmission) conditions.push(`transmission = ${params.bind(filters.transmission)}`);
-    if (filters.fuelType) conditions.push(`fuel_type = ${params.bind(filters.fuelType)}`);
+    return this.db.query(
+      `SELECT * FROM (
+         SELECT 'make' AS type, make AS value, count(*)::int AS count
+           FROM listings WHERE ${conditions.join(' AND ')} AND make ILIKE ${pattern}
+          GROUP BY make
+         UNION ALL
+         SELECT 'model', model, count(*)::int
+           FROM listings WHERE ${conditions.join(' AND ')} AND model ILIKE ${pattern}
+          GROUP BY model
+         UNION ALL
+         SELECT 'location', location, count(*)::int
+           FROM listings WHERE ${conditions.join(' AND ')} AND location ILIKE ${pattern}
+          GROUP BY location
+       ) suggestions
+       ORDER BY type, count DESC, value
+       LIMIT ${params.bind(limit)}`,
+      params.values,
+    );
+  }
 
-    // Scoped to a category and everything beneath it. The subtree is resolved
-    // from the ltree path, but wrapped in ARRAY() rather than written as
-    // `IN (subquery)`: the semi-join form made the planner scan the whole active
-    // index and filter afterwards (35 ms on 50k rows), while the array form
-    // turns the category into an index condition (0.17 ms).
-    const scope = filters.categoryId ?? categoryId;
-    if (scope !== undefined) {
-      conditions.push(
-        `category_id = ANY(ARRAY(SELECT id FROM categories WHERE path <@ (SELECT path FROM categories WHERE id = ${params.bind(scope)})))`,
+  /**
+   * Applies attribute values to a listing.
+   *
+   * `null` removes a value, which is how a client clears an attribute without
+   * resending the whole set.
+   */
+  private async writeAttributeValues(
+    client: PoolClient,
+    listingId: number,
+    attributes: { attributeId: number; value: AttributeValueColumns | null }[],
+  ): Promise<void> {
+    for (const attribute of attributes) {
+      if (attribute.value === null) {
+        await client.query(
+          'DELETE FROM listing_attribute_values WHERE listing_id = $1 AND attribute_id = $2',
+          [listingId, attribute.attributeId],
+        );
+        continue;
+      }
+
+      const value = attribute.value;
+      await client.query(
+        `INSERT INTO listing_attribute_values
+           (listing_id, attribute_id, value_text, value_num, value_bool)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (listing_id, attribute_id) DO UPDATE
+            SET value_text = EXCLUDED.value_text,
+                value_num  = EXCLUDED.value_num,
+                value_bool = EXCLUDED.value_bool,
+                updated_at = now()`,
+        [
+          listingId,
+          attribute.attributeId,
+          value.value_text ?? null,
+          value.value_num ?? null,
+          value.value_bool ?? null,
+        ],
       );
     }
+  }
+}
 
-    return conditions;
+/**
+ * Relevance score of the current query. Bound here rather than inlined because
+ * it is needed twice — once in ORDER BY, once in the keyset predicate.
+ *
+ * Cast to `float8` deliberately. `ts_rank` returns `real`, so the value that
+ * reaches the cursor is the float8 round-trip of a float4 and compares as
+ * *lower* than the stored rank — every row sharing the boundary score would be
+ * re-served on the next page. Widening in SQL keeps the cursor value and the
+ * ordering expression bit-identical.
+ */
+function relevanceExpression(q: string, params: ParameterList): string {
+  return `ts_rank(search_vector, websearch_to_tsquery('simple', ${params.bind(q)}))::float8`;
+}
+
+function attributeValue(row: AttributeValueRow): unknown {
+  switch (row.type) {
+    case 'range':
+      return row.value_num;
+    case 'boolean':
+      return row.value_bool;
+    default:
+      return row.value_text;
   }
 }

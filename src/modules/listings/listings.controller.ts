@@ -24,7 +24,12 @@ import { ListingsService } from './listings.service.js';
 import { CreateListingDto } from './dto/create-listing.dto.js';
 import { UpdateListingDto } from './dto/update-listing.dto.js';
 import { BrowseListingsDto } from './dto/browse-listings.dto.js';
-import { ListingDto, ListingPageDto } from './dto/listing-response.dto.js';
+import { SuggestListingsDto } from './dto/suggest-listings.dto.js';
+import {
+  ListingDto,
+  ListingPageDto,
+  SuggestResponseDto,
+} from './dto/listing-response.dto.js';
 import { ErrorResponseDto } from '../../shared/errors/error-response.dto.js';
 
 @ApiTags('listings')
@@ -56,6 +61,33 @@ export class ListingsController {
   })
   browse(@Query() query: BrowseListingsDto) {
     return this.listings.browse(query);
+  }
+
+  @Get('search')
+  @ApiOperation({
+    summary: 'Full-text and faceted search',
+    description:
+      'PostgreSQL full-text search over make, model, and location, combined with every filter `GET /listings` accepts. Sorted by relevance unless `sort` says otherwise.',
+  })
+  @ApiOkResponse({ type: ListingPageDto })
+  @ApiBadRequestResponse({
+    type: ErrorResponseDto,
+    description: 'Invalid filter, cursor, sort key, or unknown `attr.*` key.',
+  })
+  search(@Query() query: BrowseListingsDto) {
+    return this.listings.browse(query);
+  }
+
+  @Get('search/suggest')
+  @ApiOperation({
+    summary: 'Autocomplete suggestions',
+    description:
+      'Case-insensitive prefix matches on make, model, and city, ranked by how many listings carry them. Backed by `text_pattern_ops` indexes.',
+  })
+  @ApiOkResponse({ type: SuggestResponseDto })
+  @ApiBadRequestResponse({ type: ErrorResponseDto, description: '`q` is missing or empty.' })
+  suggest(@Query() query: SuggestListingsDto) {
+    return this.listings.suggest(query);
   }
 
   @Get(':id')

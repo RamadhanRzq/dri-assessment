@@ -6,6 +6,7 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
+  IsObject,
   IsOptional,
   IsString,
   Matches,
@@ -112,4 +113,15 @@ export class CreateListingDto {
   @IsInt()
   @IsOptional()
   categoryId?: number | null;
+
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: true,
+    example: { seats: '7', engine_capacity: 1500, accident_free: true },
+    description:
+      "Dynamic attribute values keyed by the attribute's `key`. Each key must be defined on the listing's category or one of its ancestors; values are checked against the attribute's type.",
+  })
+  @IsObject()
+  @IsOptional()
+  attributes?: Record<string, unknown>;
 }

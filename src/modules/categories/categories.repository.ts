@@ -112,13 +112,4 @@ export class CategoriesRepository {
       return rows.rows[0];
     });
   }
-
-  /** Ids of a category and every descendant, for scoped listing queries. */
-  async findSubtreeIds(id: number): Promise<number[]> {
-    const rows = await this.db.query<{ id: number }>(
-      `SELECT id FROM categories WHERE path <@ (SELECT path FROM categories WHERE id = $1)`,
-      [id],
-    );
-    return rows.map((row) => row.id);
-  }
 }
