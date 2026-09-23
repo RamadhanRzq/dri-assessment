@@ -1,15 +1,3 @@
-// Minimal forward-only migration runner.
-//
-// Applied files are recorded in schema_migrations so re-runs are no-ops.
-// Each file runs inside a transaction: a failed migration leaves no partial DDL.
-//
-// Run with Node's native type stripping:
-//   npm run migrate
-//
-// ponytail: no down/rollback migrations and no checksum drift detection.
-// Add a `--down` path and per-file hashes when a second environment needs to
-// reverse a release, not while schema changes are still additive.
-
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
