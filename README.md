@@ -66,6 +66,13 @@ routing traffic instead of letting requests fail as `500`s.
 
 ## API
 
+Interactive documentation is served from the running app:
+
+| URL | Contents |
+| --- | --- |
+| `/docs` | Swagger UI |
+| `/docs-json` | OpenAPI 3 document |
+
 ### Listings
 
 | Method | Endpoint | Description |
