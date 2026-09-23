@@ -142,6 +142,49 @@ Every failure uses one envelope, so clients never branch on two shapes:
 
 Validation failures add a `details` array naming each offending field.
 
+### Categories
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/categories` | Full tree, nested by parent |
+| `GET` | `/categories/:id` | Category with its direct children |
+| `GET` | `/categories/:id/listings` | Listings in the category and its descendants |
+| `POST` | `/categories` | Create a node |
+| `PATCH` | `/categories/:id` | Rename |
+
+Listings carry an optional `categoryId`. Filtering by a category includes every
+descendant, and `GET /categories/:id/listings` exposes the same page scoped to a
+subtree.
+
+## Category Tree Strategy
+
+Categories use a **materialised path** (`ltree`), not a parent-pointer-only
+table.
+
+The path is built from slugs (`cars.suv.5-seater`), so it is known at INSERT
+time from the parent's path and needs no trigger or second pass. A CHECK
+constraint ties the path to the node it describes: the last label must equal the
+node's slug and `nlevel(path)` must equal its depth, so a stored path cannot
+disagree with the tree.
+
+Why `ltree` over a plain text path column with `text_pattern_ops`: on a 156-node,
+4-level tree, descendant and ancestor lookups measured the same (~0.12 ms), so
+performance did not decide it. `ltree` won on the model — the database rejects a
+malformed path instead of storing it, ancestry is one operator (`path <@
+'cars.suv'`) rather than a `LIKE` plus an equality case for the node itself, and
+moving a subtree is `subpath()` over the descendants rather than string surgery
+on every stored path.
+
+Why not adjacency-list-only: recursive CTEs answer descendant queries but cannot
+use an index for the recursion, so filtering listings by category would rescan
+the tree on every request.
+
+Category-scoped queries resolve the subtree as `category_id = ANY(ARRAY(SELECT …
+WHERE path <@ …))`. Written as `IN (subquery)` the planner used a semi-join,
+scanned the whole active index, and filtered afterwards — 35 ms on 50k rows
+versus 0.17 ms for the array form, which the planner can use as an index
+condition.
+
 ## Indexing Strategy
 
 `listings` carries three index families, each tied to a query shape:
