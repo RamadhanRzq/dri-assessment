@@ -1,3 +1,4 @@
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsIn,
@@ -25,33 +26,51 @@ export type ListingSortKey = (typeof LISTING_SORT_KEYS)[number];
 export type SortOrder = 'asc' | 'desc';
 
 export class BrowseListingsDto {
+  @ApiPropertyOptional({
+    example: 'Toyota',
+    maxLength: 100,
+    description: 'Case-insensitive exact match.',
+  })
   @IsString()
   @MaxLength(100)
   @IsOptional()
   make?: string;
 
+  @ApiPropertyOptional({
+    example: 'Avanza',
+    maxLength: 100,
+    description: 'Case-insensitive exact match.',
+  })
   @IsString()
   @MaxLength(100)
   @IsOptional()
   model?: string;
 
+  @ApiPropertyOptional({
+    example: 'Jakarta',
+    maxLength: 100,
+    description: 'Case-insensitive exact match.',
+  })
   @IsString()
   @MaxLength(100)
   @IsOptional()
   location?: string;
 
+  @ApiPropertyOptional({ example: 100_000_000, minimum: 0, description: 'Inclusive, in IDR.' })
   @Type(() => Number)
   @IsInt()
   @Min(0)
   @IsOptional()
   minPrice?: number;
 
+  @ApiPropertyOptional({ example: 300_000_000, minimum: 0, description: 'Inclusive, in IDR.' })
   @Type(() => Number)
   @IsInt()
   @Min(0)
   @IsOptional()
   maxPrice?: number;
 
+  @ApiPropertyOptional({ example: 2020, minimum: 1900, maximum: 2100 })
   @Type(() => Number)
   @IsInt()
   @Min(1900)
@@ -59,6 +78,7 @@ export class BrowseListingsDto {
   @IsOptional()
   yearFrom?: number;
 
+  @ApiPropertyOptional({ example: 2025, minimum: 1900, maximum: 2100 })
   @Type(() => Number)
   @IsInt()
   @Min(1900)
@@ -66,48 +86,68 @@ export class BrowseListingsDto {
   @IsOptional()
   yearTo?: number;
 
+  @ApiPropertyOptional({ example: 0, minimum: 0 })
   @Type(() => Number)
   @IsInt()
   @Min(0)
   @IsOptional()
   minMileage?: number;
 
+  @ApiPropertyOptional({ example: 100_000, minimum: 0 })
   @Type(() => Number)
   @IsInt()
   @Min(0)
   @IsOptional()
   maxMileage?: number;
 
+  @ApiPropertyOptional({ enum: LISTING_CONDITIONS, example: 'used' })
   @IsIn(LISTING_CONDITIONS)
   @IsOptional()
   condition?: ListingCondition;
 
+  @ApiPropertyOptional({ enum: LISTING_TRANSMISSIONS, example: 'automatic' })
   @IsIn(LISTING_TRANSMISSIONS)
   @IsOptional()
   transmission?: ListingTransmission;
 
+  @ApiPropertyOptional({ enum: LISTING_FUEL_TYPES, example: 'petrol' })
   @IsIn(LISTING_FUEL_TYPES)
   @IsOptional()
   fuelType?: ListingFuelType;
 
-  /** Omit to browse every non-removed listing; pass `removed` to target them. */
+  @ApiPropertyOptional({
+    enum: LISTING_STATUSES,
+    description: 'Omit to browse every status except `removed`.',
+  })
   @IsIn(LISTING_STATUSES)
   @IsOptional()
   status?: ListingStatus;
 
+  @ApiPropertyOptional({
+    enum: LISTING_SORT_KEYS,
+    default: 'createdAt',
+    description: 'Column to order by. Always tie-broken by `id`.',
+  })
   @IsIn(LISTING_SORT_KEYS)
   @IsOptional()
   sort: ListingSortKey = 'createdAt';
 
+  @ApiPropertyOptional({ enum: ['asc', 'desc'], default: 'desc' })
   @IsIn(['asc', 'desc'])
   @IsOptional()
   order: SortOrder = 'desc';
 
+  @ApiPropertyOptional({
+    maxLength: 500,
+    description:
+      'Keyset cursor from a previous response. Bound to the sort key it was issued for, so changing `sort` invalidates it.',
+  })
   @IsString()
   @MaxLength(500)
   @IsOptional()
   cursor?: string;
 
+  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 20 })
   @Type(() => Number)
   @IsInt()
   @Min(1)
