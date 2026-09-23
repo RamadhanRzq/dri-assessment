@@ -142,6 +142,29 @@ Every failure uses one envelope, so clients never branch on two shapes:
 
 Validation failures add a `details` array naming each offending field.
 
+## Indexing Strategy
+
+`listings` carries three index families, each tied to a query shape:
+
+| Family | Serves |
+| --- | --- |
+| `listings_active_*` (partial, `WHERE status <> 'removed'`) | Default browse, one per sort key |
+| `listings_status_*` (`status, <sort>, id`) | Explicit `status=` filters, including `removed` |
+| `listings_{make,model,location}_lower_idx` | Combined equality filters on those columns |
+
+The partial family exists because the default browse predicate is an inequality.
+`(status, created_at, id)` can only serve `status = ?`, so the planner fell back
+to a sequential scan plus a top-N sort — on 50k rows that was 869 buffers and
+~11 ms to return 21 rows, growing with table size. A partial index matching the
+predicate gives an index-only scan at ~0.1 ms, and it still serves
+`status='available'`/`pending`/`sold`; `status='removed'` is the one case the
+partial index excludes, which the `listings_status_*` family covers.
+
+`fuel_type`, `condition`, and `transmission` are deliberately **not** indexed.
+With 3–4 distinct values an equality filter still matches a fifth of the table,
+so the planner consistently preferred the sort index with a filter; `EXPLAIN`
+produced identical plans with and without them. Migration `0002` drops them.
+
 ## Pagination Strategy
 
 `GET /listings` uses keyset (cursor) pagination, not `OFFSET`.
