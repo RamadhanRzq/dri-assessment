@@ -1,7 +1,5 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { AppController } from './app.controller.js';
-import { AppService } from './app.service.js';
 import { validateEnv } from './shared/config/env.validation.js';
 
 @Module({
@@ -11,7 +9,5 @@ import { validateEnv } from './shared/config/env.validation.js';
       validate: validateEnv,
     }),
   ],
-  controllers: [AppController],
-  providers: [AppService],
 })
 export class AppModule {}
