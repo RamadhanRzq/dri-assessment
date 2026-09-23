@@ -9,6 +9,7 @@
     "test",
     "dist",
     "**/*spec.ts",
-    "src/shared/database/migrate.ts"
+    "src/shared/database/migrate.ts",
+    "src/shared/database/seed.ts"
   ]
 }

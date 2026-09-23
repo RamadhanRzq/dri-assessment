@@ -21,7 +21,9 @@
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "migrate": "node --env-file=.env src/shared/database/migrate.ts",
-    "migrate:test": "node --env-file=.env.test src/shared/database/migrate.ts"
+    "migrate:test": "node --env-file=.env.test src/shared/database/migrate.ts",
+    "seed": "node --env-file=.env src/shared/database/seed.ts",
+    "seed:test": "node --env-file=.env.test src/shared/database/seed.ts"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",
