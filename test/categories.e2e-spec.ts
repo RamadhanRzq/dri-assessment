@@ -28,8 +28,10 @@ describe('Categories (e2e)', () => {
   });
 
   beforeEach(async () => {
-    // listings holds the FK, so clear the link before the tree.
+    // listings holds the FK, so clear the link before the tree; attributes hang
+    // off categories through category_attributes.
     await db.query('UPDATE listings SET category_id = NULL');
+    await db.query('DELETE FROM attributes');
     await db.query('DELETE FROM categories');
   });
 

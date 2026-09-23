@@ -103,6 +103,44 @@ const CATEGORY_BY_MODEL: Record<string, string> = {
   'Mio': 'scooter', 'Aerox': 'scooter', 'W175': 'sport', 'Address': 'scooter',
 };
 
+/**
+ * Filter attributes the seeder defines, with the categories that expose them.
+ *
+ * Mirrors what a real deployment would configure: capacity and fuel apply to
+ * both roots, seats only to cars, and a boolean that is genuinely boolean.
+ */
+const ATTRIBUTE_DEFINITIONS: Array<{
+  key: string;
+  label: string;
+  type: 'enum' | 'range' | 'boolean';
+  unit?: string;
+  options?: string[];
+  categories: string[];
+}> = [
+  {
+    key: 'engine_capacity',
+    label: 'Engine Capacity',
+    type: 'range',
+    unit: 'cc',
+    categories: ['cars', 'motorcycles'],
+  },
+  {
+    key: 'fuel_type',
+    label: 'Fuel Type',
+    type: 'enum',
+    options: FUEL_TYPES,
+    categories: ['cars', 'motorcycles'],
+  },
+  { key: 'seat_count', label: 'Seat Count', type: 'range', unit: 'seats', categories: ['cars'] },
+  { key: 'is_negotiable', label: 'Negotiable', type: 'boolean', categories: ['cars', 'motorcycles'] },
+];
+
+/** Engine capacity range per root slug, in cc. */
+const ENGINE_CC: Record<string, [number, number]> = {
+  cars: [1000, 3500],
+  motorcycles: [110, 1300],
+};
+
 /** mulberry32: small, fast, and identical across runs and platforms. */
 function mulberry32(seed: number): () => number {
   let state = seed;
@@ -152,12 +190,18 @@ type SeedRow = Record<(typeof COLUMNS)[number], string | number | string[] | nul
 /** Set once the category tree exists; maps a model to its leaf category id. */
 let categoryIdFor: (model: string) => number | null = () => null;
 
-function buildRow(index: number): SeedRow {
+/** A row plus the attribute values that belong to it. */
+type SeedListing = { row: SeedRow; attributes: Record<string, string | number | boolean> };
+
+function buildRow(index: number): SeedListing {
   const make = pick(MAKES);
   const model = pick(MODELS_BY_MAKE[make]);
   const createdAt = new Date(Date.UTC(2026, 0, 1) - int(0, SPREAD_DAYS) * 86_400_000);
+  const root = isMotorcycle(make) ? 'motorcycles' : 'cars';
+  const fuelType = pick(FUEL_TYPES);
+  const [ccMin, ccMax] = ENGINE_CC[root];
 
-  return {
+  const row: SeedRow = {
     make,
     model,
     year: int(2010, 2024),
@@ -167,7 +211,7 @@ function buildRow(index: number): SeedRow {
     price: (isMotorcycle(make) ? int(8, 120) : int(20, 1_500)) * 1_000_000,
     condition: pick(CONDITIONS),
     transmission: pick(TRANSMISSIONS),
-    fuel_type: pick(FUEL_TYPES),
+    fuel_type: fuelType,
     color: pick(COLORS),
     images: Array.from(
       { length: int(1, 4) },
@@ -179,11 +223,36 @@ function buildRow(index: number): SeedRow {
     created_at: createdAt.toISOString(),
     updated_at: createdAt.toISOString(),
   };
+
+  const attributes: Record<string, string | number | boolean> = {
+    engine_capacity: int(ccMin, ccMax),
+    fuel_type: fuelType,
+    is_negotiable: pick(['true', 'false']) === 'true',
+  };
+  // Seats are a car attribute; leaving them off motorcycles also exercises the
+  // "attribute present for some listings only" path the facet counts must handle.
+  if (root === 'cars') attributes.seat_count = pick([2, 5, 7]);
+
+  return { row, attributes };
 }
 
-async function insertBatch(client: pg.PoolClient, rows: SeedRow[]): Promise<void> {
+/**
+ * Column each seeded attribute writes. Fixed per key, so the value column is
+ * never chosen from input.
+ */
+const VALUE_COLUMN_BY_KEY: Record<string, 'value_text' | 'value_num' | 'value_bool'> = {
+  engine_capacity: 'value_num',
+  seat_count: 'value_num',
+  fuel_type: 'value_text',
+  is_negotiable: 'value_bool',
+};
+
+/** Filled once the definitions exist, so rows can reference them by key. */
+const attributeIdByKey = new Map<string, number>();
+
+async function insertBatch(client: pg.PoolClient, listings: SeedListing[]): Promise<void> {
   const values: unknown[] = [];
-  const tuples = rows.map((row) => {
+  const tuples = listings.map(({ row }) => {
     const placeholders = COLUMNS.map((column) => {
       values.push(row[column]);
       return `$${values.length}`;
@@ -191,10 +260,38 @@ async function insertBatch(client: pg.PoolClient, rows: SeedRow[]): Promise<void
     return `(${placeholders.join(', ')})`;
   });
 
-  await client.query(
-    `INSERT INTO listings (${COLUMNS.join(', ')}) VALUES ${tuples.join(', ')}`,
+  const { rows: inserted } = await client.query<{ id: number }>(
+    `INSERT INTO listings (${COLUMNS.join(', ')}) VALUES ${tuples.join(', ')} RETURNING id`,
     values,
   );
+
+  // One statement per value column, so every tuple in it has the same shape.
+  const byColumn = new Map<string, unknown[]>();
+  listings.forEach(({ attributes }, index) => {
+    for (const [key, value] of Object.entries(attributes)) {
+      const attributeId = attributeIdByKey.get(key);
+      const column = VALUE_COLUMN_BY_KEY[key];
+      if (attributeId === undefined || column === undefined) continue;
+
+      const params = byColumn.get(column) ?? [];
+      params.push(inserted[index].id, attributeId, value);
+      byColumn.set(column, params);
+    }
+  });
+
+  for (const [column, params] of byColumn) {
+    const tupleSql = params
+      .map((_, i) => i)
+      .filter((i) => i % 3 === 0)
+      .map((i) => `($${i + 1}, $${i + 2}, $${i + 3})`)
+      .join(', ');
+
+    await client.query(
+      `INSERT INTO listing_attribute_values (listing_id, attribute_id, ${column})
+       VALUES ${tupleSql}`,
+      params,
+    );
+  }
 }
 
 const count = Number(process.argv[2] ?? DEFAULT_COUNT);
@@ -221,8 +318,10 @@ try {
   try {
     await client.query('BEGIN');
     // listings references categories, so clear the link before the tree.
+    // listing_attribute_values references both, hence the cascade.
     await client.query('UPDATE listings SET category_id = NULL');
-    await client.query('TRUNCATE TABLE listings RESTART IDENTITY');
+    await client.query('TRUNCATE TABLE listings RESTART IDENTITY CASCADE');
+    await client.query('DELETE FROM attributes');
     await client.query('DELETE FROM categories');
 
     // Category ids are assigned by the database, so capture the leaf ids by slug
@@ -244,6 +343,40 @@ try {
       }
     }
     categoryIdFor = (model: string) => leafIdBySlug.get(CATEGORY_BY_MODEL[model] ?? '') ?? null;
+
+    // Attribute definitions are global; `category_attributes` decides which
+    // categories expose them.
+    await client.query('DELETE FROM attributes');
+    const categoryIdBySlug = new Map<string, number>(leafIdBySlug);
+    for (const root of CATEGORY_TREE) {
+      const { rows } = await client.query<{ id: number }>(
+        'SELECT id FROM categories WHERE slug = $1',
+        [root.slug],
+      );
+      categoryIdBySlug.set(root.slug, rows[0].id);
+    }
+
+    for (const definition of ATTRIBUTE_DEFINITIONS) {
+      const { rows } = await client.query<{ id: number }>(
+        `INSERT INTO attributes (key, label, type, unit, options)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [
+          definition.key,
+          definition.label,
+          definition.type,
+          definition.unit ?? null,
+          definition.options ?? [],
+        ],
+      );
+      attributeIdByKey.set(definition.key, rows[0].id);
+
+      for (const slug of definition.categories) {
+        await client.query(
+          'INSERT INTO category_attributes (category_id, attribute_id) VALUES ($1, $2)',
+          [categoryIdBySlug.get(slug), rows[0].id],
+        );
+      }
+    }
 
     for (let offset = 0; offset < count; offset += BATCH_SIZE) {
       const size = Math.min(BATCH_SIZE, count - offset);

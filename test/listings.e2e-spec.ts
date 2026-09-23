@@ -47,7 +47,8 @@ describe('Listings (e2e)', () => {
   });
 
   beforeEach(async () => {
-    // Identity is not reset, so ids grow across tests; assertions never assume them.
+    // Identity is not reset, so ids grow across tests; assertions never assume
+    // them. Attribute values cascade with the listings they belong to.
     await db.query('DELETE FROM listings');
   });
 
