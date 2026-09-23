@@ -24,6 +24,7 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['**/*.e2e-spec.ts'],
+    fileParallelism: false,
     env: {
       NODE_ENV: testEnv.NODE_ENV ?? 'test',
       DATABASE_URL: testEnv.DATABASE_URL,
