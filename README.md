@@ -42,6 +42,18 @@ npm run migrate         # apply pending migrations to DATABASE_URL
 npm run migrate:test    # apply to the test database (.env.test)
 ```
 
+## Seed Data
+
+```bash
+npm run seed            # reset and insert 500 listings
+npm run seed 50         # reset and insert 50 listings
+```
+
+The seeder truncates `listings` and inserts the requested number of rows in
+batches. Values come from a fixed-seed PRNG, so the same command always produces
+the same rows; only `images` URLs are derived from the row index. It refuses to
+run when `NODE_ENV=production`.
+
 ## Health
 
 ```bash
@@ -153,4 +165,5 @@ npm run lint        # oxlint
 npm run test        # unit tests
 npm run test:e2e    # e2e tests (uses .env.test)
 npm run migrate     # apply migrations
+npm run seed        # reset and seed listings
 ```
