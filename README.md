@@ -267,6 +267,64 @@ docker run --rm -p 3000:3000 \
   ghcr.io/<owner>/dri-assessment:latest
 ```
 
+## Docker Compose (VPS)
+
+`docker-compose.yml` runs the whole stack on one host: PostgreSQL, a one-shot
+migration job, then the API.
+
+```bash
+cp .env.example .env     # then set POSTGRES_PASSWORD
+docker compose up -d
+docker compose logs -f api
+```
+
+| Service | Role |
+| --- | --- |
+| `db` | `postgres:17`, data on the `pgdata` volume, `pg_isready` healthcheck |
+| `migrate` | runs the migration runner once, then exits |
+| `api` | the image, published on `${API_PORT:-3000}`, polls `/health` |
+
+Ordering is enforced by dependencies, not by sleep loops: `api` waits for
+`db` to be healthy and for `migrate` to exit 0, so a fresh host never serves an
+unmigrated schema. Re-running `up` re-runs `migrate`, which is a no-op once
+`schema_migrations` is current.
+
+Compose substitutes `${...}` from `.env`, but each service receives only the
+variables listed under its own `environment` — the whole file is not injected.
+`DATABASE_URL` is defined once via the `x-database-url` anchor, so the password
+lives in one place.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `POSTGRES_PASSWORD` | database password; **required**, no default | — |
+| `POSTGRES_USER` | database user | `spc` |
+| `POSTGRES_DB` | database name | `automotive_marketplace` |
+| `API_PORT` | host port for the API | `3000` |
+| `IMAGE` | image to run | `ghcr.io/<owner>/dri-assessment:latest` |
+| `CORS_ORIGIN` | comma-separated allowed origins | empty (CORS off) |
+
+`build: .` is present next to `image:`, so the same file works two ways:
+`docker compose up -d --build` builds locally from the checkout, while a host
+without the source just pulls `IMAGE`. Nothing is exposed except the API port;
+PostgreSQL stays on the internal network.
+
+The API container runs as the non-root `node` user. The image's `EXPOSE 3000`
+is informational — `PORT` and the published port are what the API actually
+binds.
+
+Seeding is deliberately not a compose service: the seeder truncates tables and
+refuses to run when `NODE_ENV=production`, which the image sets. Run it as a
+one-off against the same database, clearing `NODE_ENV` for that single run:
+
+```bash
+docker compose run --rm --no-deps -e NODE_ENV= migrate \
+  node src/shared/database/seed.ts 500
+```
+
+It reuses the `migrate` service because that one already carries `DATABASE_URL`
+and the copied seed script, and `--no-deps` keeps it from restarting the stack.
+Nothing seeds on `up`, so a restart never wipes the database.
+
 ## Scripts
 
 ```bash

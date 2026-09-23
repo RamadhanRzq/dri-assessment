@@ -1,0 +1,79 @@
+# VPS deployment: PostgreSQL, a one-shot migration, then the API.
+#
+#   cp .env.example .env   # then set POSTGRES_PASSWORD (see README > Docker Compose)
+#   docker compose up -d
+#
+# Compose substitutes ${...} from .env, but each service receives only the
+# variables listed under its own `environment`, never the whole file.
+
+# Shared between the migration job and the API so the credential lives once.
+x-database-url: &database-url "postgresql://${POSTGRES_USER:-spc}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-automotive_marketplace}"
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '3'
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-spc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-automotive_marketplace}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-spc} -d ${POSTGRES_DB:-automotive_marketplace}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: *logging
+
+  # Runs to completion before the API starts, so a fresh database is never
+  # served by an unmigrated schema. Re-running is a no-op.
+  migrate:
+    image: ${IMAGE:-ghcr.io/ramadhanrzq/dri-assessment:latest}
+    build: .
+    command: ['node', 'src/shared/database/migrate.ts']
+    environment:
+      DATABASE_URL: *database-url
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    image: ${IMAGE:-ghcr.io/ramadhanrzq/dri-assessment:latest}
+    build: .
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      DATABASE_URL: *database-url
+      CORS_ORIGIN: ${CORS_ORIGIN:-}
+    ports:
+      - '${API_PORT:-3000}:3000'
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # /health answers 503 when the database is unreachable, so this doubles
+      # as a readiness check for the connection pool.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  pgdata:

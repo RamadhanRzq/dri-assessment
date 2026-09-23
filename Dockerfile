@@ -13,6 +13,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY src/shared/database/migrate.ts ./src/shared/database/migrate.ts
+COPY src/shared/database/seed.ts ./src/shared/database/seed.ts
 COPY src/shared/database/migrations ./src/shared/database/migrations
 USER node
 EXPOSE 3000
