@@ -7,8 +7,9 @@ import { ApiExceptionFilter } from './../src/shared/errors/api-exception.filter.
 import { DatabaseService } from './../src/shared/database/database.service.js';
 
 /**
- * Runs against automotive_marketplace_test (see .env.test), which Vitest loads
- * with a higher priority than .env so the development data is never touched.
+ * Runs against automotive_marketplace_test. The Vitest config injects
+ * DATABASE_URL from .env.test into process.env, which beats Nest's fallback
+ * to .env — otherwise these tests would delete development rows.
  */
 describe('Listings (e2e)', () => {
   let app: INestApplication<App>;
