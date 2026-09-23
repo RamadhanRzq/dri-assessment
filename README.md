@@ -229,6 +229,44 @@ the boundary row on the next page.
 Postgres SQLSTATE codes to the status they actually mean (`23505` → `409`,
 `23514` → `400`), instead of leaking constraint violations as `500`s.
 
+## Docker
+
+The image is multi-stage: `npm ci` + `nest build` in the builder, then a
+production-only `npm ci --omit=dev` runtime. The migration runner and its `.sql`
+files are copied in because the runner reads them from disk at runtime, so a
+release can migrate itself without shipping the source tree.
+
+```bash
+docker build -t dri-assessment .
+docker run --rm -e DATABASE_URL=postgresql://... dri-assessment \
+  node src/shared/database/migrate.ts
+docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://... dri-assessment
+```
+
+## CI/CD
+
+`.github/workflows/deploy.yml` runs two jobs:
+
+| Job | Trigger | Steps |
+| --- | --- | --- |
+| `quality` | every push and PR | `npm ci`, `npm run lint`, `npm run migrate:test`, `npm run test:e2e` against a `postgres:17` service container |
+| `publish` | pushes to `main` only | builds the image and pushes it to GHCR |
+
+The image is published to `ghcr.io/<owner>/dri-assessment` with three tags:
+the branch name, `sha-<full-commit>`, and `latest` (default branch only).
+It authenticates with the built-in `GITHUB_TOKEN` — no extra secret is needed,
+and the repository name is lowercased because GHCR rejects uppercase owners.
+
+Pushing an image is where the workflow stops: pulling and running it is the
+deployment platform's job.
+
+```bash
+docker pull ghcr.io/<owner>/dri-assessment:latest
+docker run --rm -p 3000:3000 \
+  -e DATABASE_URL=postgresql://... -e NODE_ENV=production \
+  ghcr.io/<owner>/dri-assessment:latest
+```
+
 ## Scripts
 
 ```bash

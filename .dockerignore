@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+.git
+.github
+.env
+.env.*
+.birdview
+test
+PRD.md
+*.log
+.DS_Store
