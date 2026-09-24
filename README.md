@@ -2,6 +2,8 @@
 
 Production-oriented REST API for an automotive marketplace: vehicle listings, hierarchical categories, dynamic filter attributes, full-text and faceted search.
 
+**Live:** <https://dri.ramadhanrizqi.web.id> · **Docs:** <https://dri.ramadhanrizqi.web.id/docs>
+
 ## Tech Stack
 
 - **Runtime**: Node.js 24+ + NestJS + TypeScript
@@ -527,7 +529,7 @@ docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://... dri-assessment
 | `quality` | every push and PR | `npm ci`, `npm run lint`, `npm run migrate:test`, `npm run test:e2e` against a `postgres:17` service container |
 | `publish` | pushes to `main` only | builds the image and pushes it to GHCR |
 
-The image is published to `ghcr.io/<owner>/dri-assessment` with three tags:
+The image is published to `ghcr.io/ramadhanrzq/dri-assessment` with three tags:
 the branch name, `sha-<full-commit>`, and `latest` (default branch only).
 It authenticates with the built-in `GITHUB_TOKEN` — no extra secret is needed,
 and the repository name is lowercased because GHCR rejects uppercase owners.
@@ -536,10 +538,10 @@ Pushing an image is where the workflow stops: pulling and running it is the
 deployment platform's job.
 
 ```bash
-docker pull ghcr.io/<owner>/dri-assessment:latest
+docker pull ghcr.io/ramadhanrzq/dri-assessment:latest
 docker run --rm -p 3000:3000 \
   -e DATABASE_URL=postgresql://... -e NODE_ENV=production \
-  ghcr.io/<owner>/dri-assessment:latest
+  ghcr.io/ramadhanrzq/dri-assessment:latest
 ```
 
 ## Docker Compose (VPS)
@@ -575,7 +577,7 @@ lives in one place.
 | `POSTGRES_USER` | database user | `postgres` |
 | `POSTGRES_DB` | database name | `automotive_marketplace` |
 | `API_PORT` | host port for the API | `3000` |
-| `IMAGE` | image to run | `ghcr.io/<owner>/dri-assessment:latest` |
+| `IMAGE` | image to run | `ghcr.io/ramadhanrzq/dri-assessment:latest` |
 | `CORS_ORIGIN` | comma-separated allowed origins | empty (CORS off) |
 
 `build: .` is present next to `image:`, so the same file works two ways:
@@ -599,6 +601,42 @@ docker compose run --rm --no-deps -e NODE_ENV= migrate \
 It reuses the `migrate` service because that one already carries `DATABASE_URL`
 and the copied seed script, and `--no-deps` keeps it from restarting the stack.
 Nothing seeds on `up`, so a restart never wipes the database.
+
+## Live Deployment
+
+**Base URL: <https://dri.ramadhanrizqi.web.id>**
+
+| Resource | URL |
+| --- | --- |
+| API base | <https://dri.ramadhanrizqi.web.id> |
+| Swagger UI | <https://dri.ramadhanrizqi.web.id/docs> |
+| OpenAPI 3 document | <https://dri.ramadhanrizqi.web.id/docs-json> |
+| Health / readiness | <https://dri.ramadhanrizqi.web.id/health> |
+
+The instance runs the image from this repository behind a managed PostgreSQL
+database, with migrations applied and 500 seeded listings. It is public and
+needs no local setup:
+
+```bash
+curl https://dri.ramadhanrizqi.web.id/health
+# {"status":"ok","uptime":47392.8,"timestamp":"2026-09-24T02:16:31.267Z","database":"up"}
+
+curl 'https://dri.ramadhanrizqi.web.id/listings/search?q=toyota&limit=1'
+curl 'https://dri.ramadhanrizqi.web.id/filters?q=toyota'
+curl 'https://dri.ramadhanrizqi.web.id/listings/search/suggest?q=toy'
+# {"data":[{"type":"make","value":"Toyota","count":28}]}
+
+curl https://dri.ramadhanrizqi.web.id/categories
+```
+
+The 500 seeded rows split across statuses (`available` 122, `pending` 135,
+`sold` 123, `removed` 120), so a default browse reports `total: 380` — the
+`removed` rows are deliberately excluded unless `status=removed` is passed.
+
+Verified against the live host: `/health` reports `database: "up"`; browse,
+full-text search, facet counts, category tree, category-scoped browse
+(`/categories/1/listings` → `total: 285`), autocomplete, and both Swagger URLs
+all respond. See [Deployment](#deployment) for how this instance was produced.
 
 ## Deployment
 
@@ -640,9 +678,8 @@ open https://<host>/docs          # Swagger UI
 `/health` answers `503` when the pool cannot reach the database, so the same
 endpoint works as the platform's readiness probe.
 
-> **Live instance:** not published from this repository. The compose stack and
-> the GHCR image above are the deployment path; no public base URL has been
-> provisioned yet, so the README does not advertise one.
+> **Live instance:** <https://dri.ramadhanrizqi.web.id> — see
+> [Live Deployment](#live-deployment) above for the verified endpoints.
 
 ## Scripts
 
