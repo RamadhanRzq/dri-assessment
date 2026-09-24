@@ -82,7 +82,7 @@ export class ListingsController {
   @ApiOperation({
     summary: 'Autocomplete suggestions',
     description:
-      'Case-insensitive prefix matches on make, model, and city, ranked by how many listings carry them. Backed by `text_pattern_ops` indexes.',
+      'Case-insensitive prefix matches on make, model, and city, ranked by how many listings carry them. Backed by GIN trigram indexes on the bare columns.',
   })
   @ApiOkResponse({ type: SuggestResponseDto })
   @ApiBadRequestResponse({ type: ErrorResponseDto, description: '`q` is missing or empty.' })
