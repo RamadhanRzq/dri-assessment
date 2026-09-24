@@ -4,10 +4,18 @@ Production-oriented REST API for an automotive marketplace: vehicle listings, hi
 
 ## Tech Stack
 
-- **Runtime**: Node.js + NestJS + TypeScript
-- **Database**: PostgreSQL (raw SQL / query builder — no ORM)
+- **Runtime**: Node.js 24+ + NestJS + TypeScript
+- **Database**: PostgreSQL 17 (raw SQL / query builder — no ORM)
 - **Testing**: Vitest + Supertest
 - **Lint/Format**: oxlint + Prettier
+
+## Prerequisites
+
+| Requirement | Version | Notes |
+| --- | --- | --- |
+| Node.js | 24 or newer | The Dockerfile and CI both pin `node:24-alpine`. |
+| PostgreSQL | 17 | Needs the `ltree` and `pg_trgm` extensions; the migrations create them. |
+| npm | bundled with Node | Dependencies are locked in `package-lock.json`. |
 
 ## Setup
 
@@ -16,8 +24,56 @@ npm install
 cp .env.example .env
 createdb automotive_marketplace
 npm run migrate
+npm run seed            # optional: 500 deterministic listings
 npm run start:dev
 ```
+
+## Architecture
+
+One Nest application composed of four feature modules over a shared database
+layer. Requests pass through a global `AttributeQueryPipe`, then a
+`ValidationPipe`, then a controller; failures leave through a single
+`ApiExceptionFilter`. No ORM sits in between — repositories issue parameterised
+SQL against a `pg` pool.
+
+```text
+HTTP
+ │
+ ├─ AttributeQueryPipe   collapses attr.<key> / attr.<key>.min|max into `attributes`
+ ├─ ValidationPipe       whitelist + coercion, per-DTO
+ └─ Controller → Service → Repository → DatabaseService (pg Pool)
+                                 │
+                                 └─ ApiExceptionFilter → { error: { code, message, details? } }
+```
+
+| Module | Owns |
+| --- | --- |
+| `listings` | Listing lifecycle, keyset browse, full-text search, autocomplete |
+| `categories` | Materialised-path tree, subtree browsing |
+| `filters` | Category filter definitions, facet aggregation |
+| `health` | Liveness plus database reachability |
+| `shared/database` | Pool, transactions, migration runner, seeder |
+| `shared/errors` | Error envelope and SQLSTATE→HTTP mapping |
+| `shared/pagination` | Cursor codec |
+| `shared/config` | Boot-time environment validation |
+
+Cross-cutting rules live in one place rather than per feature: the listing
+predicates are built once in `listings/listing-query.ts` and reused by browse,
+count, search, suggest, and every facet query, so a facet count cannot drift
+from the listing query it describes.
+
+## Testing
+
+```bash
+npm run test        # unit tests
+npm run test:e2e    # end-to-end tests against .env.test
+npm run lint        # oxlint
+```
+
+The e2e suites boot the real application against the test database, so
+`npm run migrate:test` must run once first. `.env.test` is tracked and points at
+`automotive_marketplace_test`; `vitest.config.e2e.ts` copies its values into
+`process.env` so the suite cannot fall back to `.env` and wipe development data.
 
 ## Environment Variables
 
@@ -41,6 +97,32 @@ completely.
 npm run migrate         # apply pending migrations to DATABASE_URL
 npm run migrate:test    # apply to the test database (.env.test)
 ```
+
+## Schema Diagram
+
+![Database schema diagram](assets/Schema-Diagram.png)
+
+The diagram source is [`docs/schema.dbml`](docs/schema.dbml) — paste it into
+[dbdiagram.io](https://dbdiagram.io) to regenerate the picture above, or render
+it locally with `npx @dbml/cli dbml2sql docs/schema.dbml --postgres`. The
+migrations under `src/shared/database/migrations/` remain the source of truth;
+the DBML mirrors them and adds the notes the diagram cannot show.
+
+Four tables carry the domain, and the relationships between them are the
+schema's whole design:
+
+| Relationship | Cardinality | Enforced by |
+| --- | --- | --- |
+| `categories.parent_id` → `categories.id` | many-to-one, self-referencing | FK, `ON DELETE RESTRICT`; `path`/`depth` CHECKs keep the materialised path honest |
+| `listings.category_id` → `categories.id` | many-to-one, nullable | FK, `ON DELETE RESTRICT` — an uncategorised listing is allowed, deleting a used category is not |
+| `category_attributes` → `categories` / `attributes` | one row per attachment | Composite `UNIQUE (category_id, attribute_id)`, both FKs `ON DELETE CASCADE` |
+| `listing_attribute_values` → `listings` / `attributes` | one typed value per pair | `PRIMARY KEY (listing_id, attribute_id)`, `CHECK (num_nonnulls(value_text, value_num, value_bool) = 1)` |
+
+`listings` also carries the stored generated `search_vector` column, and the
+index families in [Indexing Strategy](#indexing-strategy) — the four partial
+`listings_active_*` indexes, the `status`-prefixed family, the `lower()` and
+trigram indexes on make/model/location, and the three partial value-column
+indexes on `listing_attribute_values`.
 
 ## Seed Data
 
@@ -133,7 +215,7 @@ Supported query parameters:
 | `transmission` | `manual` \| `automatic` \| `cvt` |
 | `fuelType` | `petrol` \| `diesel` \| `electric` \| `hybrid` |
 | `status` | Defaults to every status except `removed` |
-| `sort` | `createdAt` \| `price` \| `year` \| `mileage` |
+| `sort` | `createdAt` \| `price` \| `year` \| `mileage` \| `relevance` (requires `q`) |
 | `order` | `asc` \| `desc` |
 | `limit` | 1–100, default 20 |
 | `cursor` | Opaque; from `pagination.nextCursor` |
@@ -404,6 +486,24 @@ the boundary row on the next page.
 Postgres SQLSTATE codes to the status they actually mean (`23505` → `409`,
 `23514` → `400`), instead of leaking constraint violations as `500`s.
 
+## Trade-offs & Known Limitations
+
+Deliberate choices, each with the cost it accepts:
+
+| Decision | Cost accepted |
+| --- | --- |
+| `count(*)` runs alongside every page | `pagination.total` is exact but is a second query per request; an approximate or cached count would be cheaper and is not needed at this size. |
+| Facets are computed on demand | A `GET /filters` request re-aggregates the filtered set. Correct by construction (facet counts are asserted equal to the listing query) and there is no cache to invalidate. |
+| Enum facets cap at 25 values | A long tail is dropped from the panel; the facet's `count` still describes the whole context. |
+| Category `PATCH` renames but cannot reparent | Moving a node would rewrite every descendant's `path`; that is a separate operation and is not exposed. |
+| Dynamic attributes are global, not per-category | `engine_capacity` keeps one unit/label/options across Cars and Motorcycles, at the cost of not being able to define two attributes with the same key differently per branch. |
+| Attribute filters reach values through `EXISTS` | A listing matching several attributes stays one row, at the cost of a semi-join per attribute filter. |
+| Migrations are forward-only | No `down` script; a failed migration rolls back its transaction, and a rollback of an applied migration is a manual operation. |
+| Relevance sort requires `q` | `sort=relevance` without `q` is rejected rather than silently falling back to `createdAt`. |
+| Cursor pagination cannot jump to a page number | `total` is returned for display, but `OFFSET`-style navigation is deliberately absent. |
+| No authentication or rate limiting | Out of scope for the assessment; every endpoint is public and unauthenticated. A production deployment would need both in front of the write endpoints. |
+| Soft delete only | `DELETE` sets `status = removed`; rows are never physically deleted, so the table grows and every read path must keep excluding `removed`. |
+
 ## Docker
 
 The image is multi-stage: `npm ci` + `nest build` in the builder, then a
@@ -472,7 +572,7 @@ lives in one place.
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `POSTGRES_PASSWORD` | database password; **required**, no default | — |
-| `POSTGRES_USER` | database user | `spc` |
+| `POSTGRES_USER` | database user | `postgres` |
 | `POSTGRES_DB` | database name | `automotive_marketplace` |
 | `API_PORT` | host port for the API | `3000` |
 | `IMAGE` | image to run | `ghcr.io/<owner>/dri-assessment:latest` |
@@ -499,6 +599,50 @@ docker compose run --rm --no-deps -e NODE_ENV= migrate \
 It reuses the `migrate` service because that one already carries `DATABASE_URL`
 and the copied seed script, and `--no-deps` keeps it from restarting the stack.
 Nothing seeds on `up`, so a restart never wipes the database.
+
+## Deployment
+
+The image is published to GHCR by CI (see [CI/CD](#cicd)), so a host only needs
+Docker and a PostgreSQL instance. Two supported paths:
+
+**Compose (whole stack on one host)** — the fastest route to a public URL:
+
+```bash
+cp .env.example .env          # set POSTGRES_PASSWORD, CORS_ORIGIN
+docker compose up -d          # db -> migrate (one-shot) -> api
+docker compose logs -f api
+```
+
+**Image only (managed database)** — point `DATABASE_URL` at the provider's
+Postgres and run the migration once before the API:
+
+```bash
+docker run --rm -e DATABASE_URL=postgresql://... \
+  ghcr.io/ramadhanrzq/dri-assessment:latest node src/shared/database/migrate.ts
+docker run -d -p 3000:3000 -e NODE_ENV=production \
+  -e DATABASE_URL=postgresql://... -e CORS_ORIGIN=https://example.com \
+  ghcr.io/ramadhanrzq/dri-assessment:latest
+```
+
+Production environment variables are the same four the app validates at boot:
+`NODE_ENV=production`, `PORT`, `DATABASE_URL`, `CORS_ORIGIN`. No secret is
+baked into the image — `DATABASE_URL` is injected at run time.
+
+Verify a deployment:
+
+```bash
+curl https://<host>/health        # {"status":"ok",...,"database":"up"}
+curl 'https://<host>/listings?limit=1'
+curl 'https://<host>/filters?q=toyota'
+open https://<host>/docs          # Swagger UI
+```
+
+`/health` answers `503` when the pool cannot reach the database, so the same
+endpoint works as the platform's readiness probe.
+
+> **Live instance:** not published from this repository. The compose stack and
+> the GHCR image above are the deployment path; no public base URL has been
+> provisioned yet, so the README does not advertise one.
 
 ## Scripts
 
