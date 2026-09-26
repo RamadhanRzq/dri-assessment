@@ -3,6 +3,7 @@
 Production-oriented REST API for an automotive marketplace: vehicle listings, hierarchical categories, dynamic filter attributes, full-text and faceted search.
 
 **Live:** <https://dri.ramadhanrizqi.web.id> · **Docs:** <https://dri.ramadhanrizqi.web.id/docs>
+**Live:** <https://dri.lattepos.web.id> · **Docs:** <https://dri.lattepos.web.id/docs>
 **Live:** <https://x96q.taila9f04a.ts.net> · **Docs:** <https://x96q.taila9f04a.ts.net/docs>
 
 ## Tech Stack
