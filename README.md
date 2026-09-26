@@ -6,6 +6,8 @@ Production-oriented REST API for an automotive marketplace: vehicle listings, hi
 **Live:** <https://dri.lattepos.web.id> · **Docs:** <https://dri.lattepos.web.id/docs>
 **Live:** <https://x96q.taila9f04a.ts.net> · **Docs:** <https://x96q.taila9f04a.ts.net/docs>
 
+_If the primary link is unreachable (some ISPs block it), try the alternatives above._
+
 ## Tech Stack
 
 - **Runtime**: Node.js 24+ + NestJS + TypeScript
